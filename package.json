@@ -1,0 +1,21 @@
+{
+  "name": "api-tracer",
+  "version": "1.0.0",
+  "description": "Extract exported APIs and function dependency trees from npm packages.",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node test/function-extraction-test.js && node test/main-cli-test.js",
+    "analyze": "node src/main.js",
+    "tree": "node src/api/function-dependencies-tree.js",
+    "test:main": "node test/main-cli-test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@babel/parser": "^7.29.2",
+    "@babel/traverse": "^7.29.0",
+    "@babel/types": "^7.29.0"
+  }
+}
