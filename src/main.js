@@ -5,7 +5,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { analyzeFile } = require('./api/function-analysis');
 const { analyzeFunctionDependencies } = require('./api/dependencies/function-dependencies');
-const { buildDependencyTrees, renderDependencyTrees } = require('./api/function-dependencies-tree');
+const { buildDependencyTrees } = require('./api/function-dependencies-tree');
 
 const execFileAsync = promisify(execFile);
 
@@ -229,34 +229,10 @@ async function collectExportedApisFromPackage(pkgDir) {
 	return [...apiMap.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function buildLibraryResult(libName, versionToApis) {
-	const versions = [...versionToApis.keys()]
-		.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-		.map((version) => ({
-			version,
-			apis: versionToApis.get(version),
-		}));
-
-	return {
-		library: libName,
-		versions,
-	};
-}
-
 async function collectDependencyTreeFromPackage(pkgDir) {
 	const analysis = await analyzeFunctionDependencies(pkgDir);
 	const trees = await buildDependencyTrees(analysis, pkgDir);
-	return {
-		trees,
-		text: renderDependencyTrees(trees),
-	};
-}
-
-function buildLibraryTreeResult(treeResult) {
-	return {
-		trees: treeResult.trees,
-		text: treeResult.text,
-	};
+	return { trees };
 }
 
 function buildTargetVersion({ version, commitId }) {
@@ -276,21 +252,12 @@ async function analyzeLibrary({ libraryName, version, commitId = null, packageDi
 
 		const apis = await collectExportedApisFromPackage(source.pkgDir);
 		const treeResult = await collectDependencyTreeFromPackage(source.pkgDir);
-		const apiResult = buildLibraryResult(resolvedLibraryName, new Map([[source.targetVersion || 'local', apis]]));
 
 		return {
-			libraryName: resolvedLibraryName,
+			library: resolvedLibraryName,
 			version: source.targetVersion,
-			commitId,
 			apis,
 			dependencyTrees: treeResult.trees,
-			dependencyTreeText: treeResult.text,
-			apiResult,
-			treeResult: buildLibraryTreeResult(treeResult),
-			counts: {
-				apis: apis.length,
-				dependencyTrees: treeResult.trees.length,
-			},
 		};
 	} finally {
 		if (tempRoot) {
@@ -336,10 +303,7 @@ async function main() {
 		commitId: args.commitId,
 	});
 
-	console.log(`Analyzed ${result.libraryName}@${result.version || 'local'}`);
-	console.log(`  -> ${result.counts.apis} APIs found`);
-	console.log(`  -> ${result.counts.dependencyTrees} dependency trees found`);
-
+	console.log(JSON.stringify(result, null, 2));
 	return result;
 }
 
