@@ -1,6 +1,6 @@
 {
   "name": "api-tracer",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Extract exported APIs and function dependency trees from npm packages.",
   "main": "src/index.js",
   "scripts": {
