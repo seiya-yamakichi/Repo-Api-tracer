@@ -253,12 +253,7 @@ async function analyzeLibrary({ libraryName, version, commitId = null, packageDi
 		const apis = await collectExportedApisFromPackage(source.pkgDir);
 		const treeResult = await collectDependencyTreeFromPackage(source.pkgDir);
 
-		return {
-			library: resolvedLibraryName,
-			version: source.targetVersion,
-			apis,
-			dependencyTrees: treeResult.trees,
-		};
+		return treeResult.trees;
 	} finally {
 		if (tempRoot) {
 			await fsp.rm(tempRoot, { recursive: true, force: true });
