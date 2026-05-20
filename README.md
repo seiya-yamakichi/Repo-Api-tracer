@@ -120,6 +120,8 @@ const { analyzeFile } = require('./src/api/function-analysis');
 })();
 ```
 
+注意: `analyzeFile` が返す各関数オブジェクトには `bodyStart` / `bodyEnd` / `body` が含まれます。`body` は関数本体（波かっこ内）のソース文字列です。
+
 - テストと CLI:
 	- 統合テスト：`test/function-extraction-test.js`（`npm test` で実行されます）
 	- 直接実行する場合:

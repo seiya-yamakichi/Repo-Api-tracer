@@ -120,6 +120,9 @@ exports.analyzeFile = async (filePath, mode = 0) => {
       filePath: func.filePath,
       start: func.start,
       end: func.end,
+      bodyStart: typeof func.bodyStart === 'number' ? func.bodyStart : null,
+      bodyEnd: typeof func.bodyEnd === 'number' ? func.bodyEnd : null,
+      body: (typeof func.bodyStart === 'number' && typeof func.bodyEnd === 'number') ? fileContent.slice(func.bodyStart, func.bodyEnd) : null,
     }));
 
     // mode: 0 = exported only, 1 = all

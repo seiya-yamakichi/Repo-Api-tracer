@@ -89,6 +89,8 @@ const getFunction = async (filePath, mode = 0) => {
                   filePath,
                   start: funcNode.start,
                   end: funcNode.end,
+                  bodyStart: funcNode.body?.start || funcNode.start,
+                  bodyEnd: funcNode.body?.end || funcNode.end,
                 });
               }
             }
@@ -108,6 +110,8 @@ const getFunction = async (filePath, mode = 0) => {
                 filePath,
                 start: prop.start,
                 end: prop.end,
+                bodyStart: prop.body?.start || prop.start,
+                bodyEnd: prop.body?.end || prop.end,
               });
             }
           }
@@ -131,10 +135,12 @@ const getFunction = async (filePath, mode = 0) => {
             name,
             isExported: false,
             arg: params,
-            returnExprs: getReturnExpressionsFromFunctionNode(path.node),
+              returnExprs: getReturnExpressionsFromFunctionNode(path.node),
             filePath,
-            start: path.node.start,
-            end: path.node.end,
+              start: path.node.start,
+              end: path.node.end,
+              bodyStart: path.node.body?.start || path.node.start,
+              bodyEnd: path.node.body?.end || path.node.end,
           });
         }
       },
@@ -155,6 +161,8 @@ const getFunction = async (filePath, mode = 0) => {
               filePath,
               start: path.node.init.start,
               end: path.node.init.end,
+              bodyStart: path.node.init.body?.start || path.node.init.start,
+              bodyEnd: path.node.init.body?.end || path.node.init.end,
             });
           }
         }
@@ -198,6 +206,8 @@ const getFunction = async (filePath, mode = 0) => {
                 filePath,
                 start: path.node.right.start,
                 end: path.node.right.end,
+                bodyStart: path.node.right.body?.start || path.node.right.start,
+                bodyEnd: path.node.right.body?.end || path.node.right.end,
               });
             }
           }
@@ -226,6 +236,8 @@ const getFunction = async (filePath, mode = 0) => {
                     filePath,
                     start: func.start,
                     end: func.end,
+                    bodyStart: func.body?.start || func.start,
+                    bodyEnd: func.body?.end || func.end,
                   });
                 }
               }
@@ -267,6 +279,8 @@ const getFunction = async (filePath, mode = 0) => {
             filePath,
             start: path.node.start,
             end: path.node.end,
+            bodyStart: path.node.body?.start || path.node.start,
+            bodyEnd: path.node.body?.end || path.node.end,
           });
         }
       },
@@ -294,6 +308,8 @@ const getFunction = async (filePath, mode = 0) => {
             filePath,
             start: path.node.value.start,
             end: path.node.value.end,
+            bodyStart: path.node.value.body?.start || path.node.value.start,
+            bodyEnd: path.node.value.body?.end || path.node.value.end,
           });
         }
       },
