@@ -93,3 +93,45 @@ npm test
 ```bash
 npm run test:main
 ```
+
+## 関数抽出機能（Function Extraction）
+
+このプロジェクトには、パッケージのエントリポイントから関数を抽出し、エクスポート判定と関数依存情報を生成する機能が含まれています。
+
+- 主要モジュール:
+	- `src/api/search/getFunction.js` — 関数ノードの抽出（内部実装）
+	- `src/api/function-analysis.js` — `analyzeFile(filePath, mode)` を提供し、`getFunction` の結果に `isExported` フラグを付与して返します
+
+- `analyzeFile(filePath, mode)` の使い方:
+	- `filePath` : 解析対象のファイル（パッケージのエントリポイントの絶対パスなど）
+	- `mode` : `0` = エクスポートされた関数のみ返す、`1` = 全関数を返す
+
+```js
+const { analyzeFile } = require('./src/api/function-analysis');
+
+(async () => {
+	const entry = '/absolute/path/to/package/index.js';
+	// 全関数を抽出
+	const all = await analyzeFile(entry, 1);
+	// エクスポート関数のみ抽出
+	const exported = await analyzeFile(entry, 0);
+
+	console.log(exported.map(f => f.name));
+})();
+```
+
+- テストと CLI:
+	- 統合テスト：`test/function-extraction-test.js`（`npm test` で実行されます）
+	- 直接実行する場合:
+
+```bash
+npm install
+# 統合テストを実行
+npm test
+# 単体で関数抽出テストのみ実行する場合
+node test/function-extraction-test.js
+```
+
+- 注意事項:
+	- `test/function-extraction-test.js` は npm レジストリから tarball をダウンロードして解析します。`curl` と `tar` が利用可能で、ネットワーク接続が必要です。
+	- 内部 API のため、ライブラリの公開インターフェースは将来変更される可能性があります。必要であればラッパー関数を用意してください。
