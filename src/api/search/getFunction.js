@@ -3,21 +3,19 @@ const path = require('path');
 const traverse = require('@babel/traverse').default;
 const t = require('@babel/types');
 const { parseFile } = require('./parser');
-const { resolvePrototypeAliases } = require('./prototypeResolver');
 const { isObfuscated, getParams: utilGetParams, getReturnExpressionsFromFunctionNode: utilGetReturnExpressionsFromFunctionNode } = require('./utils');
 
 // このモジュールは関数抽出に専念します（export 判定は別モジュールで行う）
 const getFunction = async (filePath, mode = 0) => {
-  const resultArray = []; // 結果格納用配列
-  const prototypeAliases = new Map(); // プロトタイプエイリアス（getInstanceMethod の処理を統合）
-  const objectDefs = new Map(); // 変数に束縛された ObjectExpression を記録
+  const resultArray = [];
+  const prototypeAliases = new Map();
+  const objectDefs = new Map();
 
   try {
     if (!filePath.match(/\.(js|ts|jsx|tsx)$/)) return [];
 
     const fileContent = await fs.readFile(filePath, 'utf8');
 
-    // 難読化・圧縮されたコードを除外
     if (isObfuscated(fileContent)) {
       return [];
     }
@@ -25,25 +23,58 @@ const getFunction = async (filePath, mode = 0) => {
     const parsed = parseFile(filePath, fileContent);
     if (!parsed) return [];
 
-    // この関数は export 判定を行わず、関数抽出と補助データの収集に専念する
-
-    // ヘルパー：関数の「名前」と「引数配列」をまとめた小さなオブジェクトを返す
-    const serializeFunction = (name, args) => ({ name, args });
-
-    // ヘルパー：関数の引数 AST ノードを文字列の配列に変換（utils.jsから利用）
     const getParams = (params) => utilGetParams(params, fileContent);
-
-    // ヘルパー：return 式のソース文字列を取得（utils.jsから利用）
     const getReturnExpressionsFromFunctionNode = (funcNode) => utilGetReturnExpressionsFromFunctionNode(funcNode, fileContent);
 
-    // ヘルパー：オブジェクトプロパティから関数を再帰的に抽出（getFunctionProperty の処理を統合）
+    const addFunctionEntry = (entry) => {
+      const name = entry?.name;
+      const start = entry?.start;
+      const end = entry?.end;
+      if (!name || typeof start !== 'number' || typeof end !== 'number') return;
+
+      const sameName = resultArray.find((f) => f.name === name);
+      if (sameName) {
+        if (typeof sameName.bodyStart !== 'number') sameName.bodyStart = entry.bodyStart;
+        if (typeof sameName.bodyEnd !== 'number') sameName.bodyEnd = entry.bodyEnd;
+        return;
+      }
+
+      resultArray.push(entry);
+    };
+
+    const memberExpressionToPath = (node) => {
+      if (t.isIdentifier(node)) return node.name;
+      if (t.isThisExpression(node)) return 'this';
+      if (t.isMemberExpression(node)) {
+        const obj = memberExpressionToPath(node.object);
+        let prop = null;
+        if (t.isIdentifier(node.property)) prop = node.property.name;
+        else if (t.isStringLiteral(node.property)) prop = node.property.value;
+        if (!obj || !prop) return null;
+        return `${obj}.${prop}`;
+      }
+      return null;
+    };
+
+    const deriveAssignedName = (leftNode, functionNode) => {
+      if (t.isIdentifier(leftNode)) {
+        return leftNode.name;
+      }
+      if (t.isMemberExpression(leftNode)) {
+        const fullPath = memberExpressionToPath(leftNode);
+        if (fullPath) return fullPath;
+      }
+      if (functionNode?.id?.name) return functionNode.id.name;
+      return null;
+    };
+
     const extractFunctionReferences = (objNode, pathPrefix = '', isExported = false) => {
       if (!t.isObjectExpression(objNode)) return;
 
       objNode.properties.forEach((prop) => {
         if (t.isObjectProperty(prop) || t.isObjectMethod(prop)) {
           let key;
-          
+
           if (t.isIdentifier(prop.key)) {
             key = prop.key.name;
           } else if (t.isStringLiteral(prop.key)) {
@@ -55,31 +86,21 @@ const getFunction = async (filePath, mode = 0) => {
           const fullPath = pathPrefix ? `${pathPrefix}.${key}` : key;
 
           if (t.isObjectProperty(prop)) {
-            // 値が関数参照（識別子）の場合
-            if (t.isIdentifier(prop.value)) {
-              explicitlyExportedNames.add(prop.value.name);
-            } 
-            // 値がネストされたオブジェクトの場合
-            else if (t.isObjectExpression(prop.value)) {
+            if (t.isObjectExpression(prop.value)) {
               extractFunctionReferences(prop.value, fullPath, isExported);
-            } 
-            // 値がインライン関数の場合
-            else if (t.isFunctionExpression(prop.value) || t.isArrowFunctionExpression(prop.value)) {
+            } else if (t.isFunctionExpression(prop.value) || t.isArrowFunctionExpression(prop.value)) {
               const funcNode = prop.value;
               const params = getParams(funcNode.params);
               const internalName = funcNode.id?.name;
-              
-              // 同じ位置の関数が既に登録されているかチェック
-              const existingIdx = resultArray.findIndex((f) => 
+
+              const existingIdx = resultArray.findIndex((f) =>
                 f.start === funcNode.start && f.end === funcNode.end
               );
-              
+
               if (existingIdx >= 0) {
-                // 既存関数に isExported フラグを伝播
                 resultArray[existingIdx].isExported = isExported || resultArray[existingIdx].isExported;
               } else {
-                // 新規登録（内部関数名を優先、なければプロパティパス）
-                resultArray.push({
+                addFunctionEntry({
                   name: internalName || fullPath,
                   isExported,
                   isPropertyFunction: true,
@@ -94,88 +115,148 @@ const getFunction = async (filePath, mode = 0) => {
                 });
               }
             }
-          } 
-          // ObjectMethod の場合（例: { add(a, b) {} }）
-          else if (t.isObjectMethod(prop)) {
+          } else if (t.isObjectMethod(prop)) {
             const params = getParams(prop.params);
-            
-            if (!resultArray.some((f) => f.start === prop.start && f.end === prop.end)) {
-              resultArray.push({
-                name: fullPath,
-                isExported,
-                isPropertyFunction: true,
-                propertyPath: fullPath,
-                arg: params,
-                returnExprs: getReturnExpressionsFromFunctionNode(prop),
-                filePath,
-                start: prop.start,
-                end: prop.end,
-                bodyStart: prop.body?.start || prop.start,
-                bodyEnd: prop.body?.end || prop.end,
-              });
-            }
+
+            addFunctionEntry({
+              name: fullPath,
+              isExported,
+              isPropertyFunction: true,
+              propertyPath: fullPath,
+              arg: params,
+              returnExprs: getReturnExpressionsFromFunctionNode(prop),
+              filePath,
+              start: prop.start,
+              end: prop.end,
+              bodyStart: prop.body?.start || prop.start,
+              bodyEnd: prop.body?.end || prop.end,
+            });
           }
-        } else if (t.isSpreadElement(prop)) {
-          // スプレッド構文は無視（追跡が複雑なため）
         }
       });
     };
 
-    // ✅ 第2パス: 関数抽出（トラバースして関数ノードを収集）
     traverse(parsed, {
-      // 通常の関数宣言(名前付き関数宣言)を取得
       FunctionDeclaration(path) {
         if (!path.node.id) return;
         const name = path.node.id.name;
         const params = getParams(path.node.params);
-        const serialized = serializeFunction(name, params);
 
-        if (!resultArray.some((f) => f.name === name)) {
-          resultArray.push({
-            name,
+        addFunctionEntry({
+          name,
+          isExported: false,
+          arg: params,
+          returnExprs: getReturnExpressionsFromFunctionNode(path.node),
+          filePath,
+          start: path.node.start,
+          end: path.node.end,
+          bodyStart: path.node.body?.start || path.node.start,
+          bodyEnd: path.node.body?.end || path.node.end,
+        });
+      },
+
+      ExportNamedDeclaration(path) {
+        const decl = path.node.declaration;
+        if (!decl) return;
+
+        if (t.isFunctionDeclaration(decl) && decl.id) {
+          addFunctionEntry({
+            name: decl.id.name,
             isExported: false,
-            arg: params,
-              returnExprs: getReturnExpressionsFromFunctionNode(path.node),
+            arg: getParams(decl.params),
+            returnExprs: getReturnExpressionsFromFunctionNode(decl),
             filePath,
-              start: path.node.start,
-              end: path.node.end,
-              bodyStart: path.node.body?.start || path.node.start,
-              bodyEnd: path.node.body?.end || path.node.end,
+            start: decl.start,
+            end: decl.end,
+            bodyStart: decl.body?.start || decl.start,
+            bodyEnd: decl.body?.end || decl.end,
           });
+          return;
+        }
+
+        if (t.isVariableDeclaration(decl)) {
+          for (const d of decl.declarations) {
+            if (!t.isIdentifier(d.id) || !d.init) continue;
+
+            if (t.isFunctionExpression(d.init) || t.isArrowFunctionExpression(d.init)) {
+              addFunctionEntry({
+                name: d.id.name,
+                isExported: false,
+                arg: getParams(d.init.params),
+                returnExprs: getReturnExpressionsFromFunctionNode(d.init),
+                filePath,
+                start: d.init.start,
+                end: d.init.end,
+                bodyStart: d.init.body?.start || d.init.start,
+                bodyEnd: d.init.body?.end || d.init.end,
+              });
+            } else if (t.isCallExpression(d.init)) {
+              const nestedFunc = d.init.arguments.find((arg) => t.isFunctionExpression(arg) || t.isArrowFunctionExpression(arg));
+              if (nestedFunc) {
+                addFunctionEntry({
+                  name: d.id.name,
+                  isExported: false,
+                  arg: getParams(nestedFunc.params),
+                  returnExprs: getReturnExpressionsFromFunctionNode(nestedFunc),
+                  filePath,
+                  start: nestedFunc.start,
+                  end: nestedFunc.end,
+                  bodyStart: nestedFunc.body?.start || nestedFunc.start,
+                  bodyEnd: nestedFunc.body?.end || nestedFunc.end,
+                });
+              }
+            } else if (t.isObjectExpression(d.init)) {
+              extractFunctionReferences(d.init, d.id.name, false);
+            }
+          }
         }
       },
 
-      // 変数宣言で関数が代入されている場合を検出
+      ExportDefaultDeclaration(path) {
+        const decl = path.node.declaration;
+        if (t.isFunctionDeclaration(decl) && decl.id) {
+          addFunctionEntry({
+            name: decl.id.name,
+            isExported: false,
+            arg: getParams(decl.params),
+            returnExprs: getReturnExpressionsFromFunctionNode(decl),
+            filePath,
+            start: decl.start,
+            end: decl.end,
+            bodyStart: decl.body?.start || decl.start,
+            bodyEnd: decl.body?.end || decl.end,
+          });
+        } else if (t.isObjectExpression(decl)) {
+          extractFunctionReferences(decl, '', false);
+        }
+      },
+
       VariableDeclarator(path) {
         if (t.isIdentifier(path.node.id) && path.node.init && (t.isFunctionExpression(path.node.init) || t.isArrowFunctionExpression(path.node.init))) {
           const name = path.node.id.name;
           const params = getParams(path.node.init.params);
-          const serialized = serializeFunction(name, params);
 
-          if (!resultArray.some((f) => f.name === name)) {
-            resultArray.push({
-              name,
-              isExported: false,
-              arg: params,
-              returnExprs: getReturnExpressionsFromFunctionNode(path.node.init),
-              filePath,
-              start: path.node.init.start,
-              end: path.node.init.end,
-              bodyStart: path.node.init.body?.start || path.node.init.start,
-              bodyEnd: path.node.init.body?.end || path.node.init.end,
-            });
-          }
+          addFunctionEntry({
+            name,
+            isExported: false,
+            arg: params,
+            returnExprs: getReturnExpressionsFromFunctionNode(path.node.init),
+            filePath,
+            start: path.node.init.start,
+            end: path.node.init.end,
+            bodyStart: path.node.init.body?.start || path.node.init.start,
+            bodyEnd: path.node.init.body?.end || path.node.init.end,
+          });
         }
-        // 変数がオブジェクト初期化なら補助データとして記録
+
         if (t.isIdentifier(path.node.id) && t.isObjectExpression(path.node.init)) {
           objectDefs.set(path.node.id.name, path.node.init);
           prototypeAliases.set(path.node.id.name, path.node.id.name);
+          extractFunctionReferences(path.node.init, path.node.id.name, false);
         }
       },
 
-      // AssignmentExpression は主にプロトタイプ関連の検出に使う
       AssignmentExpression(path) {
-        // ヘルパー：連鎖代入から最終的な関数式と左辺のメンバ式リストを取得
         const extractAliasesFromChain = (node, aliases = []) => {
           if (t.isAssignmentExpression(node)) {
             if (t.isMemberExpression(node.left)) {
@@ -186,7 +267,6 @@ const getFunction = async (filePath, mode = 0) => {
           return { aliases, func: node };
         };
 
-        // パターン 1: Constructor.prototype.method = function() { ... }
         if (t.isMemberExpression(path.node.left) &&
             t.isMemberExpression(path.node.left.object) &&
             t.isIdentifier(path.node.left.object.object) &&
@@ -197,55 +277,117 @@ const getFunction = async (filePath, mode = 0) => {
           if (constructorName && methodName) {
             const fullName = `${constructorName}.prototype.${methodName}`;
             const params = getParams(path.node.right.params);
-            if (!resultArray.some((f) => f.name === fullName)) {
-              resultArray.push({
-                name: fullName,
-                isExported: false,
-                arg: params,
-                returnExprs: getReturnExpressionsFromFunctionNode(path.node.right),
-                filePath,
-                start: path.node.right.start,
-                end: path.node.right.end,
-                bodyStart: path.node.right.body?.start || path.node.right.start,
-                bodyEnd: path.node.right.body?.end || path.node.right.end,
-              });
-            }
+            addFunctionEntry({
+              name: fullName,
+              isExported: false,
+              arg: params,
+              returnExprs: getReturnExpressionsFromFunctionNode(path.node.right),
+              filePath,
+              start: path.node.right.start,
+              end: path.node.right.end,
+              bodyStart: path.node.right.body?.start || path.node.right.start,
+              bodyEnd: path.node.right.body?.end || path.node.right.end,
+            });
           }
         }
 
-        // パターン 2: Alias.method = [Alias.method2 = ...] function() { ... } (連鎖代入対応)
-        // 例: P.sub = P.minus = function() { ... }
         const { aliases, func } = extractAliasesFromChain(path.node);
         if ((t.isFunctionExpression(func) || t.isArrowFunctionExpression(func)) && aliases.length > 0) {
           const params = getParams(func.params);
           aliases.forEach((aliasExpr) => {
             if (t.isMemberExpression(aliasExpr) && t.isIdentifier(aliasExpr.object)) {
               const aliasName = aliasExpr.object.name;
-              const methodName = t.isIdentifier(aliasExpr.property) 
-                ? aliasExpr.property.name 
+              const methodName = t.isIdentifier(aliasExpr.property)
+                ? aliasExpr.property.name
                 : (t.isStringLiteral(aliasExpr.property) ? aliasExpr.property.value : null);
-              
+
               if (methodName && (objectDefs.has(aliasName) || !prototypeAliases.has(aliasName))) {
                 const fullName = `${aliasName}.${methodName}`;
-                if (!resultArray.some((f) => f.name === fullName)) {
-                  resultArray.push({
-                    name: fullName,
-                    isExported: false,
-                    arg: params,
-                    returnExprs: getReturnExpressionsFromFunctionNode(func),
-                    filePath,
-                    start: func.start,
-                    end: func.end,
-                    bodyStart: func.body?.start || func.start,
-                    bodyEnd: func.body?.end || func.end,
-                  });
-                }
+                addFunctionEntry({
+                  name: fullName,
+                  isExported: false,
+                  arg: params,
+                  returnExprs: getReturnExpressionsFromFunctionNode(func),
+                  filePath,
+                  start: func.start,
+                  end: func.end,
+                  bodyStart: func.body?.start || func.start,
+                  bodyEnd: func.body?.end || func.end,
+                });
               }
             }
           });
         }
 
-        // パターン 3: プロトタイプエイリアスを追跡 (Big.prototype = P)
+        if (t.isFunctionExpression(path.node.right) || t.isArrowFunctionExpression(path.node.right)) {
+          const functionNode = path.node.right;
+          const assignedName = deriveAssignedName(path.node.left, functionNode);
+          if (assignedName) {
+            addFunctionEntry({
+              name: assignedName,
+              isExported: false,
+              arg: getParams(functionNode.params),
+              returnExprs: getReturnExpressionsFromFunctionNode(functionNode),
+              filePath,
+              start: functionNode.start,
+              end: functionNode.end,
+              bodyStart: functionNode.body?.start || functionNode.start,
+              bodyEnd: functionNode.body?.end || functionNode.end,
+            });
+          }
+        }
+
+        if (t.isCallExpression(path.node.right)) {
+          const nestedFunc = path.node.right.arguments.find((arg) =>
+            t.isFunctionExpression(arg) || t.isArrowFunctionExpression(arg)
+          );
+          if (nestedFunc) {
+            const assignedName = deriveAssignedName(path.node.left, nestedFunc);
+            if (assignedName) {
+              addFunctionEntry({
+                name: assignedName,
+                isExported: false,
+                arg: getParams(nestedFunc.params),
+                returnExprs: getReturnExpressionsFromFunctionNode(nestedFunc),
+                filePath,
+                start: nestedFunc.start,
+                end: nestedFunc.end,
+                bodyStart: nestedFunc.body?.start || nestedFunc.start,
+                bodyEnd: nestedFunc.body?.end || nestedFunc.end,
+              });
+            }
+          }
+        }
+
+        if (t.isObjectExpression(path.node.right)) {
+          let prefix = '';
+          if (t.isIdentifier(path.node.left)) {
+            prefix = path.node.left.name;
+          } else if (t.isMemberExpression(path.node.left)) {
+            prefix = memberExpressionToPath(path.node.left) || '';
+          }
+          extractFunctionReferences(path.node.right, prefix, false);
+        }
+
+        if (t.isIdentifier(path.node.right)) {
+          const aliasTarget = path.node.right.name;
+          const referenced = resultArray.find((f) => f.name === aliasTarget);
+          const aliasName = deriveAssignedName(path.node.left, null);
+          if (referenced && aliasName) {
+            addFunctionEntry({
+              name: aliasName,
+              isExported: false,
+              arg: referenced.arg || [],
+              returnExprs: referenced.returnExprs || [],
+              filePath,
+              start: referenced.start,
+              end: referenced.end,
+              bodyStart: referenced.bodyStart,
+              bodyEnd: referenced.bodyEnd,
+            });
+          }
+        }
+
         if (t.isMemberExpression(path.node.left) &&
             t.isIdentifier(path.node.left.object) &&
             t.isIdentifier(path.node.left.property, { name: 'prototype' }) &&
@@ -256,101 +398,54 @@ const getFunction = async (filePath, mode = 0) => {
         }
       },
 
-      // クラスメソッドを検出(クラス内のメソッド)
       ClassMethod(path) {
-        if (!t.isIdentifier(path.node.key)) return; // メソッド名が識別子でない場合は無視
+        if (!t.isIdentifier(path.node.key)) return;
         const name = path.node.key.name;
         const params = getParams(path.node.params);
-        const parentClass = path.findParent((p) => p.isClassDeclaration()); // 親クラスを探す
-        let isExported = false;
-        // 親クラスがエクスポートされているか確認
-        if (parentClass) {
-          if (t.isExportNamedDeclaration(parentClass.parent) || t.isExportDefaultDeclaration(parentClass.parent)) {
-            isExported = true;
-          }
-        }
 
-        if (!resultArray.some((f) => f.name === name)) {
-          resultArray.push({
-            name,
-            isExported: false,
-            arg: params,
-            returnExprs: getReturnExpressionsFromFunctionNode(path.node),
-            filePath,
-            start: path.node.start,
-            end: path.node.end,
-            bodyStart: path.node.body?.start || path.node.start,
-            bodyEnd: path.node.body?.end || path.node.end,
-          });
-        }
+        addFunctionEntry({
+          name,
+          isExported: false,
+          arg: params,
+          returnExprs: getReturnExpressionsFromFunctionNode(path.node),
+          filePath,
+          start: path.node.start,
+          end: path.node.end,
+          bodyStart: path.node.body?.start || path.node.start,
+          bodyEnd: path.node.body?.end || path.node.end,
+        });
       },
 
-      // クラスプロパティで関数が代入されている場合を検出(クラス内のフィールドで関数式やアロー関数が代入されている場合)
       ClassProperty(path) {
-        if (!t.isIdentifier(path.node.key) || !path.node.value) return; // プロパティ名が識別子でない、または値がない場合は無視
-        if (!(t.isArrowFunctionExpression(path.node.value) || t.isFunctionExpression(path.node.value))) return; // 値が関数式またはアロー関数でない場合は無視
+        if (!t.isIdentifier(path.node.key) || !path.node.value) return;
+        if (!(t.isArrowFunctionExpression(path.node.value) || t.isFunctionExpression(path.node.value))) return;
         const name = path.node.key.name;
         const params = getParams(path.node.value.params);
-        const parentClass = path.findParent((p) => p.isClassDeclaration());
-        let isExported = false;
-        if (parentClass) {
-          if (t.isExportNamedDeclaration(parentClass.parent) || t.isExportDefaultDeclaration(parentClass.parent)) {
-            isExported = true;
-          }
-        }
 
-        if (!resultArray.some((f) => f.name === name)) {
-          resultArray.push({
-            name,
-            isExported: false,
-            arg: params,
-            returnExprs: getReturnExpressionsFromFunctionNode(path.node.value),
-            filePath,
-            start: path.node.value.start,
-            end: path.node.value.end,
-            bodyStart: path.node.value.body?.start || path.node.value.start,
-            bodyEnd: path.node.value.body?.end || path.node.value.end,
-          });
-        }
+        addFunctionEntry({
+          name,
+          isExported: false,
+          arg: params,
+          returnExprs: getReturnExpressionsFromFunctionNode(path.node.value),
+          filePath,
+          start: path.node.value.start,
+          end: path.node.value.end,
+          bodyStart: path.node.value.body?.start || path.node.value.start,
+          bodyEnd: path.node.value.body?.end || path.node.value.end,
+        });
       },
     });
-    // 注意: プロトタイプの最終解決や export フラグ付与は別モジュールで行う
-    // この関数は生の関数情報配列と補助データを返す
+
     return {
       functions: resultArray,
       prototypeAliases,
       objectDefs,
     };
-
   } catch (error) {
     console.error(`getFunc Failed to process file: ${filePath}`, error);
     return { functions: [], prototypeAliases, objectDefs };
   }
-
-}
-function toExportedFunctionInfo(data) {
-  // 重複を除外 (同じ名前の関数が複数ある場合は最初の1つだけを保持)
-  const seen = new Set();
-  const uniqueData = [];
-  
-  for (const func of data) {
-    if (func.isExported && !seen.has(func.name)) {
-      seen.add(func.name);
-      uniqueData.push(func);
-    }
-  }
-  
-  // 統一フォーマット: { name, arg, returnExprs, isExported, filePath, start, end }
-  return uniqueData.map((func) => ({
-    name: func.name,
-    arg: func.arg || [],
-    returnExprs: func.returnExprs || [],
-    isExported: func.isExported,
-    filePath: func.filePath,
-    start: func.start,
-    end: func.end,
-  }));
-}
+};
 
 // 外部から呼び出せるようにexport
 exports.getFunction = getFunction;
@@ -359,10 +454,8 @@ exports.getFunction = getFunction;
 if (require.main === module) {
   (async () => {
     try {
-      // ✅ コマンドライン引数からファイルパスを取得
       const target = process.argv[2] || path.join(__dirname, 'data1.js');
       const result = await getFunction(target, 0);
-      // When run directly, print JSON to stdout for convenience.
       console.log(JSON.stringify(result, null, 2));
     } catch (e) {
       console.error(e);
