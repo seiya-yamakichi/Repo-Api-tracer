@@ -12,6 +12,9 @@ const isObfuscated = (fileContent) => {
   const avgLineLength = fileContent.length / lines.length;
   if (avgLineLength > 300) return true;
   
+  // 小さなファイルでは単一文字変数の割合で誤検出しやすいためスキップ
+  if (fileContent.length < 200) return false;
+
   // 変数名が1文字のみが多い（圧縮の兆候）
   const singleCharVars = (fileContent.match(/\b[a-z]\b/g) || []).length;
   const ratio = singleCharVars / (fileContent.length / 100);

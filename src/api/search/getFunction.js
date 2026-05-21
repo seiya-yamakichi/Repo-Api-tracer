@@ -371,20 +371,29 @@ const getFunction = async (filePath, mode = 0) => {
 
         if (t.isIdentifier(path.node.right)) {
           const aliasTarget = path.node.right.name;
-          const referenced = resultArray.find((f) => f.name === aliasTarget);
+          const referencedFuncs = resultArray.filter((f) => f.name === aliasTarget);
           const aliasName = deriveAssignedName(path.node.left, null);
-          if (referenced && aliasName) {
-            addFunctionEntry({
-              name: aliasName,
-              isExported: false,
-              arg: referenced.arg || [],
-              returnExprs: referenced.returnExprs || [],
-              filePath,
-              start: referenced.start,
-              end: referenced.end,
-              bodyStart: referenced.bodyStart,
-              bodyEnd: referenced.bodyEnd,
-            });
+          if (referencedFuncs.length > 0 && aliasName) {
+            // 特別扱い: module.exports に代入される場合は
+            // "module.exports" という名前のエントリを作らず、参照先の関数を isExported=true にする
+            if (aliasName === 'module.exports') {
+              referencedFuncs.forEach((rf) => { rf.isExported = true; });
+            } else {
+              // それ以外は通常どおり alias として登録
+              referencedFuncs.forEach((referenced) => {
+                addFunctionEntry({
+                  name: aliasName,
+                  isExported: false,
+                  arg: referenced.arg || [],
+                  returnExprs: referenced.returnExprs || [],
+                  filePath,
+                  start: referenced.start,
+                  end: referenced.end,
+                  bodyStart: referenced.bodyStart,
+                  bodyEnd: referenced.bodyEnd,
+                });
+              });
+            }
           }
         }
 
