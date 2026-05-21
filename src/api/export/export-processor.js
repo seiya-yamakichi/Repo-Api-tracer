@@ -7,6 +7,7 @@ const t = require('@babel/types');
  * @param {Array} options.resultArray - 関数情報配列
  * @param {Set} options.explicitlyExportedNames - 明示的にエクスポートされた名前
  * @param {Set} options.exportedConstructors - エクスポートされたコンストラクタ
+ * @param {Set} options.exportedObjects - module.exports / exports のオブジェクト名やエイリアス
  * @param {object} options.ast - パースされたAST
  */
 exports.processExportFlags = (options) => {
@@ -14,6 +15,7 @@ exports.processExportFlags = (options) => {
     resultArray,
     explicitlyExportedNames,
     exportedConstructors,
+    exportedObjects,
     ast,
   } = options;
 
@@ -35,6 +37,17 @@ exports.processExportFlags = (options) => {
   resultArray.forEach((func) => {
     if (explicitlyExportedNames.has(func.name)) {
       func.isExported = true;
+    }
+  });
+
+  // module.exports のエイリアス配下にぶら下がる関数（例: cs.get, cs.to.hex）を export 扱いにする
+  resultArray.forEach((func) => {
+    if (!func || !func.name) return;
+    for (const objName of (exportedObjects || [])) {
+      if (func.name === objName || func.name.startsWith(objName + '.')) {
+        func.isExported = true;
+        break;
+      }
     }
   });
 

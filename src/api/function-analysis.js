@@ -106,7 +106,7 @@ exports.analyzeFile = async (filePath, mode = 0) => {
     resolvePrototypeAliases({ ast: parsed, prototypeAliases, exportedConstructors, resultArray });
 
     // export によるフラグ付与
-    processExportFlags({ resultArray, explicitlyExportedNames, exportedConstructors, ast: parsed });
+    processExportFlags({ resultArray, explicitlyExportedNames, exportedConstructors, exportedObjects, ast: parsed });
 
     // 重複等の後処理
     const deduped = deduplicateResults(resultArray);
