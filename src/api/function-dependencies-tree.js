@@ -115,7 +115,7 @@ function formatUseLabel(localName, declaredName, relationType) {
 	return `${localName} -> ${declaredName} [${relation}]`;
 }
 
-function buildFunctionTree(fileMap, filePath, func, sameFileCallsByFunction = new Map(), stack = new Set(), labelOverride = null, kind = 'decl') {
+function buildFunctionTree(fileMap, filePath, func, sameFileCallsByFunction = new Map(), stack = new Set(), labelOverride = null, kind = 'decl', includeExternal = false) {
 	const normalizedFilePath = normalizePath(filePath);
 	const key = `${normalizedFilePath}::${func.name}`;
 
@@ -161,36 +161,53 @@ function buildFunctionTree(fileMap, filePath, func, sameFileCallsByFunction = ne
 	}
 
 	for (const dep of dependencies) {
-		if (dep.type !== 'local-file') continue;
+		if (dep.type === 'local-file') {
 
-		const targetFunction = pickTargetFunction(fileMap, dep);
-		const targetFile = normalizePath(dep.targetFile);
-		const childKey = targetFunction
-			? `${targetFile}::${targetFunction.name}`
-			: `${targetFile}::${dep.targetFunction || dep.importedName || dep.name}`;
+			const targetFunction = pickTargetFunction(fileMap, dep);
+			const targetFile = normalizePath(dep.targetFile);
+			const childKey = targetFunction
+				? `${targetFile}::${targetFunction.name}`
+				: `${targetFile}::${dep.targetFunction || dep.importedName || dep.name}`;
 
-		if (seen.has(childKey)) continue;
-		seen.add(childKey);
+			if (seen.has(childKey)) continue;
+			seen.add(childKey);
 
-		if (targetFunction) {
-			children.push(buildFunctionTree(
-				fileMap,
-				targetFile,
-				targetFunction,
-				sameFileCallsByFunction,
-				nextStack,
-				formatUseLabel(dep.name, targetFunction.name, 'imported-file'),
-				'use'
-			));
-		} else {
+			if (targetFunction) {
+				children.push(buildFunctionTree(
+					fileMap,
+					targetFile,
+					targetFunction,
+					sameFileCallsByFunction,
+					nextStack,
+					formatUseLabel(dep.name, targetFunction.name, 'imported-file'),
+					'use',
+					includeExternal
+				));
+			} else {
+				children.push({
+					label: formatUseLabel(
+						dep.name,
+						dep.targetFunction || dep.importedName || dep.name,
+						'imported-file'
+					),
+					kind: 'use',
+					filePath: targetFile,
+					children: [],
+				});
+			}
+
+		} else if (includeExternal && (dep.type === 'external' || dep.type === 'external-lib')) {
+			// 表示オプションが有効なら外部API呼び出しを木に追加
+			const externalLabel = dep.type === 'external'
+				? `${dep.name} (external: ${dep.sourceFile})`
+				: `${dep.name} (external library)`;
+			const childKey = `external::${externalLabel}`;
+			if (seen.has(childKey)) continue;
+			seen.add(childKey);
 			children.push({
-				label: formatUseLabel(
-					dep.name,
-					dep.targetFunction || dep.importedName || dep.name,
-					'imported-file'
-				),
+				label: externalLabel,
 				kind: 'use',
-				filePath: targetFile,
+				filePath: dep.sourceFile || null,
 				children: [],
 			});
 		}
@@ -219,7 +236,7 @@ function appendTreeNode(lines, node, indent = '', isLast = true) {
 	}
 }
 
-async function buildDependencyTrees(analysis, rootDir) {
+async function buildDependencyTrees(analysis, rootDir, includeExternal = false) {
 	const fileMap = buildAnalysisIndex(analysis);
 	const trees = [];
 
@@ -246,7 +263,7 @@ async function buildDependencyTrees(analysis, rootDir) {
 			trees.push({
 				filePath,
 				functionName: func.name,
-				root: buildFunctionTree(fileMap, filePath, func, sameFileCallsByFunction),
+				root: buildFunctionTree(fileMap, filePath, func, sameFileCallsByFunction, new Set(), null, 'decl', includeExternal),
 			});
 		}
 	}
@@ -285,7 +302,8 @@ function renderDependencyTrees(trees) {
 async function main() {
 	const rootDir = process.argv[2] ? path.resolve(process.argv[2]) : path.resolve(__dirname, '../..');
 	const analysis = await analyzeFunctionDependencies(rootDir);
-	const trees = await buildDependencyTrees(analysis, rootDir);
+	const includeExternal = process.argv.includes('--include-external') || process.argv.includes('-e');
+	const trees = await buildDependencyTrees(analysis, rootDir, includeExternal);
 
 	if (process.argv.includes('--json')) {
 		console.log(JSON.stringify(trees, null, 2));
