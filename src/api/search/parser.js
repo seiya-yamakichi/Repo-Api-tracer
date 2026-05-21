@@ -1,40 +1,101 @@
 const parser = require('@babel/parser');
 
-exports.parseFile = (filePath, fileContent) => {
+const BASE_PLUGINS = new Set([
+  'classProperties',
+  'classPrivateProperties',
+  'classPrivateMethods',
+  'optionalChaining',
+  'nullishCoalescingOperator',
+  'dynamicImport',
+  'decorators-legacy',
+  'exportDefaultFrom',
+  'exportNamespaceFrom',
+  'optionalCatchBinding',
+  'importMeta',
+  'topLevelAwait',
+  'throwExpressions'
+]);
+
+const RETRYABLE_SYNTAX_ERRORS = new Set([
+  'MissingPlugin',
+  'MissingOneOfPlugins',
+  'UnexpectedToken',
+  'UnterminatedRegExp'
+]);
+
+function buildInitialPlugins(filePath, fileContent) {
   const isTS = /\.tsx?$/i.test(filePath);
   const isJS = /\.jsx?$/.test(filePath);
-
-  // Base plugins for modern syntax
-  const basePlugins = [
-    'classProperties',
-    'classPrivateProperties',
-    'optionalChaining',
-    'nullishCoalescingOperator',
-    'dynamicImport',
-    'decorators-legacy'
-  ];
-
-  const plugins = [];
+  const plugins = new Set();
 
   if (isTS) {
-    plugins.push('typescript');
-    // only enable JSX for .tsx files (avoid confusing generics in .ts)
-    if (/\.tsx$/i.test(filePath)) plugins.push('jsx');
+    plugins.add('typescript');
+    if (/\.tsx$/i.test(filePath)) {
+      plugins.add('jsx');
+    }
   } else if (isJS) {
-    // For JS files, detect JSX usage conservatively: enable JSX only
-    // when React-related tokens or a JSX-like return are present.
     const looksLikeReact = /from\s+['"]react['"]|React\.|createElement\(|return\s*<\w|\/\*\s*@jsx/.test(fileContent);
-    if (/\.jsx$/i.test(filePath) || looksLikeReact) plugins.push('jsx');
+    if (/\.jsx$/i.test(filePath) || looksLikeReact) {
+      plugins.add('jsx');
+    }
 
-    // enable Flow when a @flow pragma is present
-    if (/\/\*\s*@flow|@flow\b/.test(fileContent)) plugins.push('flow');
+    if (/\/\*\s*@flow|@flow\b/.test(fileContent)) {
+      plugins.add('flow');
+    }
   }
 
-  plugins.push(...basePlugins);
+  for (const plugin of BASE_PLUGINS) {
+    plugins.add(plugin);
+  }
 
+  return plugins;
+}
+
+function parseWithPlugins(fileContent, plugins) {
   return parser.parse(fileContent, {
     sourceType: 'unambiguous',
-    plugins,
+    plugins: Array.from(plugins),
     errorRecovery: true,
   });
+}
+
+exports.parseFile = (filePath, fileContent) => {
+  const plugins = buildInitialPlugins(filePath, fileContent);
+  let lastError = null;
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      return parseWithPlugins(fileContent, plugins);
+    } catch (error) {
+      lastError = error;
+
+      const missingPlugins = Array.isArray(error && error.missingPlugin)
+        ? error.missingPlugin
+        : [];
+
+      let addedPlugin = false;
+      for (const missingPlugin of missingPlugins) {
+        if (!plugins.has(missingPlugin)) {
+          plugins.add(missingPlugin);
+          addedPlugin = true;
+        }
+      }
+
+      if (!addedPlugin) {
+        const isJS = /\.jsx?$/.test(filePath);
+        const hasJsxCandidate = isJS && !plugins.has('jsx') && /<[A-Za-z][\w:-]*(\s|>|\/)/.test(fileContent);
+
+        if (hasJsxCandidate && RETRYABLE_SYNTAX_ERRORS.has(error && error.reasonCode)) {
+          plugins.add('jsx');
+          addedPlugin = true;
+        }
+      }
+
+      if (!addedPlugin || !RETRYABLE_SYNTAX_ERRORS.has(error && error.reasonCode)) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError;
 };
