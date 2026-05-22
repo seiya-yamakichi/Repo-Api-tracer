@@ -120,7 +120,44 @@ const { analyzeFile } = require('./src/api/function-analysis');
 })();
 ```
 
-注意: `analyzeFile` が返す各関数オブジェクトには `bodyStart` / `bodyEnd` / `body` が含まれます。`body` は関数本体（波かっこ内）のソース文字列です。
+
+### エクスポートメタデータ (`exportKind`)
+
+各関数オブジェクトにはエクスポート情報を示す `exportKind` フィールドが追加されました。値の例:
+
+- `none`: エクスポートではない（デフォルト）
+- `named`: `export function foo` や `export const foo = () => {}` のような named export
+- `default`: `export default function ...` のような宣言型 default export
+- `default-assignment`: `module.exports = function(...) {}` や `module.exports = (function(){})()` のように `module.exports` に直接代入された関数（この場合は `name` にファイル名のベースが割り当てられ、`isExported: true`）
+- `property`: `module.exports.foo = ...` や `exports.bar = ...` のようなプロパティ割当てによるエクスポート
+
+追加フィールド:
+
+- `exportSource`（任意）: エクスポート元を示す文字列（例: `'module.exports'`、`'exports'` など）
+
+出力例（関数オブジェクトの一部）:
+
+```json
+{
+	"name": "index",
+	"isExported": true,
+	"exportKind": "property",
+	"exportSource": "module.exports",
+	"filePath": "index.js",
+	"bodyStart": 123,
+	"bodyEnd": 456
+}
+```
+
+### CLI での JSON 出力
+
+関数依存ツリー生成 CLI は JSON オプションをサポートしており、`exportKind` を含む解析結果を得ることができます。例:
+
+```bash
+node src/api/function-dependencies-tree.js /path/to/package --json > result.json
+```
+
+また、外部パッケージ呼び出しを含めるには `--include-external`（短縮 `-e`）フラグを使用します。
 
 - テストと CLI:
 	- 統合テスト：`test/function-extraction-test.js`（`npm test` で実行されます）
