@@ -31,6 +31,13 @@ const getFunction = async (filePath, mode = 0) => {
       const start = entry?.start;
       const end = entry?.end;
       if (!name || typeof start !== 'number' || typeof end !== 'number') return;
+      // If adding a non-module.exports entry that corresponds to the same
+      // function range as an existing 'module.exports' placeholder, prefer
+      // the named/default entry and remove the placeholder.
+      if (name !== 'module.exports') {
+        const idx = resultArray.findIndex((f) => f.name === 'module.exports' && f.start === start && f.end === end);
+        if (idx >= 0) resultArray.splice(idx, 1);
+      }
 
       const sameName = resultArray.find((f) => f.name === name);
       if (sameName) {
@@ -38,6 +45,9 @@ const getFunction = async (filePath, mode = 0) => {
         if (typeof sameName.bodyEnd !== 'number') sameName.bodyEnd = entry.bodyEnd;
         return;
       }
+
+      // Ensure exportKind exists for clarity about how the function is exported
+      if (!entry.exportKind) entry.exportKind = 'none';
 
       resultArray.push(entry);
     };
@@ -162,7 +172,8 @@ const getFunction = async (filePath, mode = 0) => {
         if (t.isFunctionDeclaration(decl) && decl.id) {
           addFunctionEntry({
             name: decl.id.name,
-            isExported: false,
+            isExported: true,
+            exportKind: 'named',
             arg: getParams(decl.params),
             returnExprs: getReturnExpressionsFromFunctionNode(decl),
             filePath,
@@ -181,7 +192,8 @@ const getFunction = async (filePath, mode = 0) => {
             if (t.isFunctionExpression(d.init) || t.isArrowFunctionExpression(d.init)) {
               addFunctionEntry({
                 name: d.id.name,
-                isExported: false,
+                isExported: true,
+                exportKind: 'named',
                 arg: getParams(d.init.params),
                 returnExprs: getReturnExpressionsFromFunctionNode(d.init),
                 filePath,
@@ -195,7 +207,8 @@ const getFunction = async (filePath, mode = 0) => {
               if (nestedFunc) {
                 addFunctionEntry({
                   name: d.id.name,
-                  isExported: false,
+                  isExported: true,
+                  exportKind: 'named',
                   arg: getParams(nestedFunc.params),
                   returnExprs: getReturnExpressionsFromFunctionNode(nestedFunc),
                   filePath,
@@ -206,7 +219,7 @@ const getFunction = async (filePath, mode = 0) => {
                 });
               }
             } else if (t.isObjectExpression(d.init)) {
-              extractFunctionReferences(d.init, d.id.name, false);
+                extractFunctionReferences(d.init, d.id.name, true);
             }
           }
         }
@@ -227,7 +240,7 @@ const getFunction = async (filePath, mode = 0) => {
             bodyEnd: decl.body?.end || decl.end,
           });
         } else if (t.isObjectExpression(decl)) {
-          extractFunctionReferences(decl, '', false);
+            extractFunctionReferences(decl, '', true);
         }
       },
 
@@ -323,17 +336,50 @@ const getFunction = async (filePath, mode = 0) => {
           const functionNode = path.node.right;
           const assignedName = deriveAssignedName(path.node.left, functionNode);
           if (assignedName) {
-            addFunctionEntry({
-              name: assignedName,
-              isExported: false,
-              arg: getParams(functionNode.params),
-              returnExprs: getReturnExpressionsFromFunctionNode(functionNode),
-              filePath,
-              start: functionNode.start,
-              end: functionNode.end,
-              bodyStart: functionNode.body?.start || functionNode.start,
-              bodyEnd: functionNode.body?.end || functionNode.end,
-            });
+            // If assigned directly to module.exports, treat as default export.
+            if (assignedName === 'module.exports') {
+              const fileBase = require('path').basename(filePath, require('path').extname(filePath));
+              addFunctionEntry({
+                name: fileBase || 'default',
+                isExported: true,
+                exportKind: 'default-assignment',
+                exportSource: 'module.exports',
+                arg: getParams(functionNode.params),
+                returnExprs: getReturnExpressionsFromFunctionNode(functionNode),
+                filePath,
+                start: functionNode.start,
+                end: functionNode.end,
+                bodyStart: functionNode.body?.start || functionNode.start,
+                bodyEnd: functionNode.body?.end || functionNode.end,
+              });
+            } else if (assignedName.startsWith('module.exports.') || assignedName.startsWith('exports.')) {
+              // assignment to module.exports.foo or exports.foo -> property export
+              addFunctionEntry({
+                name: assignedName,
+                isExported: true,
+                exportKind: 'property',
+                exportSource: assignedName.split('.')[0],
+                arg: getParams(functionNode.params),
+                returnExprs: getReturnExpressionsFromFunctionNode(functionNode),
+                filePath,
+                start: functionNode.start,
+                end: functionNode.end,
+                bodyStart: functionNode.body?.start || functionNode.start,
+                bodyEnd: functionNode.body?.end || functionNode.end,
+              });
+            } else {
+              addFunctionEntry({
+                name: assignedName,
+                isExported: false,
+                arg: getParams(functionNode.params),
+                returnExprs: getReturnExpressionsFromFunctionNode(functionNode),
+                filePath,
+                start: functionNode.start,
+                end: functionNode.end,
+                bodyStart: functionNode.body?.start || functionNode.start,
+                bodyEnd: functionNode.body?.end || functionNode.end,
+              });
+            }
           }
         }
 
@@ -344,17 +390,48 @@ const getFunction = async (filePath, mode = 0) => {
           if (nestedFunc) {
             const assignedName = deriveAssignedName(path.node.left, nestedFunc);
             if (assignedName) {
-              addFunctionEntry({
-                name: assignedName,
-                isExported: false,
-                arg: getParams(nestedFunc.params),
-                returnExprs: getReturnExpressionsFromFunctionNode(nestedFunc),
-                filePath,
-                start: nestedFunc.start,
-                end: nestedFunc.end,
-                bodyStart: nestedFunc.body?.start || nestedFunc.start,
-                bodyEnd: nestedFunc.body?.end || nestedFunc.end,
-              });
+              if (assignedName === 'module.exports') {
+                const fileBase = require('path').basename(filePath, require('path').extname(filePath));
+                addFunctionEntry({
+                  name: fileBase || 'default',
+                  isExported: true,
+                  exportKind: 'default-assignment',
+                  exportSource: 'module.exports',
+                  arg: getParams(nestedFunc.params),
+                  returnExprs: getReturnExpressionsFromFunctionNode(nestedFunc),
+                  filePath,
+                  start: nestedFunc.start,
+                  end: nestedFunc.end,
+                  bodyStart: nestedFunc.body?.start || nestedFunc.start,
+                  bodyEnd: nestedFunc.body?.end || nestedFunc.end,
+                });
+              } else if (assignedName.startsWith('module.exports.') || assignedName.startsWith('exports.')) {
+                addFunctionEntry({
+                  name: assignedName,
+                  isExported: true,
+                  exportKind: 'property',
+                  exportSource: assignedName.split('.')[0],
+                  arg: getParams(nestedFunc.params),
+                  returnExprs: getReturnExpressionsFromFunctionNode(nestedFunc),
+                  filePath,
+                  start: nestedFunc.start,
+                  end: nestedFunc.end,
+                  bodyStart: nestedFunc.body?.start || nestedFunc.start,
+                  bodyEnd: nestedFunc.body?.end || nestedFunc.end,
+                });
+              } else {
+                addFunctionEntry({
+                  name: assignedName,
+                  isExported: false,
+                  arg: getParams(nestedFunc.params),
+                  returnExprs: getReturnExpressionsFromFunctionNode(nestedFunc),
+                  filePath,
+                  start: nestedFunc.start,
+                  end: nestedFunc.end,
+                  bodyStart: nestedFunc.body?.start || nestedFunc.start,
+                  bodyEnd: nestedFunc.body?.end || nestedFunc.end,
+                });
+              }
             }
           }
         }
@@ -366,7 +443,8 @@ const getFunction = async (filePath, mode = 0) => {
           } else if (t.isMemberExpression(path.node.left)) {
             prefix = memberExpressionToPath(path.node.left) || '';
           }
-          extractFunctionReferences(path.node.right, prefix, false);
+          const isExp = prefix === 'module.exports' || prefix.startsWith('module.exports.') || prefix.startsWith('exports.');
+          extractFunctionReferences(path.node.right, prefix, !!isExp);
         }
 
         if (t.isIdentifier(path.node.right)) {
@@ -374,10 +452,19 @@ const getFunction = async (filePath, mode = 0) => {
           const referencedFuncs = resultArray.filter((f) => f.name === aliasTarget);
           const aliasName = deriveAssignedName(path.node.left, null);
           if (referencedFuncs.length > 0 && aliasName) {
-            // 特別扱い: module.exports に代入される場合は
-            // "module.exports" という名前のエントリを作らず、参照先の関数を isExported=true にする
+            // module.exports への別名代入なら参照先を exported にする
             if (aliasName === 'module.exports') {
-              referencedFuncs.forEach((rf) => { rf.isExported = true; });
+              referencedFuncs.forEach((rf) => {
+                rf.isExported = true;
+                if (!rf.exportKind) rf.exportKind = 'default-assignment';
+                rf.exportSource = rf.exportSource || 'module.exports';
+              });
+            } else if (aliasName.startsWith('module.exports.') || aliasName.startsWith('exports.')) {
+              referencedFuncs.forEach((rf) => {
+                rf.isExported = true;
+                if (!rf.exportKind) rf.exportKind = 'property';
+                rf.exportSource = rf.exportSource || aliasName.split('.')[0];
+              });
             } else {
               // それ以外は通常どおり alias として登録
               referencedFuncs.forEach((referenced) => {
