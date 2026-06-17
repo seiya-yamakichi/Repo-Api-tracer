@@ -230,7 +230,8 @@ const getFunction = async (filePath, mode = 0) => {
         if (t.isFunctionDeclaration(decl) && decl.id) {
           addFunctionEntry({
             name: decl.id.name,
-            isExported: false,
+            isExported: true,
+            exportKind: 'default',
             arg: getParams(decl.params),
             returnExprs: getReturnExpressionsFromFunctionNode(decl),
             filePath,

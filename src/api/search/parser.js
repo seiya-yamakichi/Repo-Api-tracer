@@ -92,10 +92,10 @@ exports.parseFile = (filePath, fileContent) => {
       }
 
       if (!addedPlugin || !RETRYABLE_SYNTAX_ERRORS.has(error && error.reasonCode)) {
-        throw error;
+        return null;
       }
     }
   }
 
-  throw lastError;
+  return null;
 };

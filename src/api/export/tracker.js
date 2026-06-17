@@ -34,6 +34,10 @@ exports.collectExports = (ast) => {
           exportedObjects.add(path.node.declaration.name);
           explicitlyExportedNames.add(path.node.declaration.name);
           exportedConstructors.add(path.node.declaration.name);
+        } else if (t.isFunctionDeclaration(path.node.declaration) && path.node.declaration.id) {
+          const name = path.node.declaration.id.name;
+          explicitlyExportedNames.add(name);
+          exportedConstructors.add(name);
         }
       },
   });
