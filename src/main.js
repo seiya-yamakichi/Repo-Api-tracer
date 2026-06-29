@@ -303,6 +303,7 @@ async function main() {
 }
 
 module.exports = {
+	analyzeFile,
 	parseCsvLine,
 	buildTargetVersion,
 	resolveExportEntrypoints,

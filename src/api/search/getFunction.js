@@ -434,6 +434,41 @@ const getFunction = async (filePath, mode = 0) => {
                 });
               }
             }
+          } else {
+            // 関数式を引数に取らない呼び出し（例: exports.foo = bar.bind(null, ...)）。
+            // 引数・返り値は静的に解決できないため空で登録するが、公開APIとしては取りこぼさない。
+            const assignedName = deriveAssignedName(path.node.left, null);
+            const callNode = path.node.right;
+            if (assignedName === 'module.exports') {
+              const fileBase = require('path').basename(filePath, require('path').extname(filePath));
+              addFunctionEntry({
+                name: fileBase || 'default',
+                isExported: true,
+                exportKind: 'default-assignment',
+                exportSource: 'module.exports',
+                arg: [],
+                returnExprs: [],
+                filePath,
+                start: callNode.start,
+                end: callNode.end,
+                bodyStart: callNode.start,
+                bodyEnd: callNode.end,
+              });
+            } else if (assignedName && (assignedName.startsWith('module.exports.') || assignedName.startsWith('exports.'))) {
+              addFunctionEntry({
+                name: assignedName,
+                isExported: true,
+                exportKind: 'property',
+                exportSource: assignedName.split('.')[0],
+                arg: [],
+                returnExprs: [],
+                filePath,
+                start: callNode.start,
+                end: callNode.end,
+                bodyStart: callNode.start,
+                bodyEnd: callNode.end,
+              });
+            }
           }
         }
 
