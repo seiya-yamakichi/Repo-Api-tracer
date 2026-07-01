@@ -18,7 +18,7 @@ const { getFunction } = require('./search/getFunction');
  */
 exports.analyzeFile = async (filePath, mode = 0) => {
   try {
-    if (!filePath.match(/\.(js|ts|jsx|tsx)$/)) return [];
+    if (!filePath.match(/\.(js|mjs|cjs|ts|jsx|tsx)$/)) return [];
 
     const fileContent = await fs.readFile(filePath, 'utf8');
     if (isObfuscated(fileContent)) return [];

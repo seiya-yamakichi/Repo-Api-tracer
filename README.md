@@ -1,4 +1,4 @@
-# api-tracer
+# repo-api-tracer
 
 npm パッケージから公開 API と関数依存ツリーを抽出する Node.js ライブラリです。
 
@@ -32,7 +32,7 @@ npm install
 ### ライブラリとして使う
 
 ```js
-const { analyzeLibrary } = require('api-tracer');
+const { analyzeLibrary } = require('repo-api-tracer');
 
 async function run() {
   const result = await analyzeLibrary({

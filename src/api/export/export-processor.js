@@ -40,6 +40,20 @@ exports.processExportFlags = (options) => {
     }
   });
 
+  /**
+   * エクスポートされたクラスのメソッド/プロパティを export 扱いにする。
+   * 例: class Big { plus(){} }; module.exports = Big;
+   */
+  resultArray.forEach((func) => {
+    if (func.className && (
+      exportedConstructors.has(func.className)
+      || explicitlyExportedNames.has(func.className)
+      || (exportedObjects && exportedObjects.has(func.className))
+    )) {
+      func.isExported = true;
+    }
+  });
+
   // module.exports のエイリアス配下にぶら下がる関数（例: cs.get, cs.to.hex）を export 扱いにする
   resultArray.forEach((func) => {
     if (!func || !func.name) return;

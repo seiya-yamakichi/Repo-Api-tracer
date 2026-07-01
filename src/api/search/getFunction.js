@@ -10,9 +10,12 @@ const getFunction = async (filePath, mode = 0) => {
   const resultArray = [];
   const prototypeAliases = new Map();
   const objectDefs = new Map();
+  // module.exports = { foo, bar } のように識別子参照でエクスポートされた関数名を記録し、
+  // traverse 完了後にまとめて isExported を付与する（前方宣言・後方宣言の双方に対応）
+  const referencedExportNames = new Set();
 
   try {
-    if (!filePath.match(/\.(js|ts|jsx|tsx)$/)) return [];
+    if (!filePath.match(/\.(js|mjs|cjs|ts|jsx|tsx)$/)) return [];
 
     const fileContent = await fs.readFile(filePath, 'utf8');
 
@@ -43,6 +46,13 @@ const getFunction = async (filePath, mode = 0) => {
       if (sameName) {
         if (typeof sameName.bodyStart !== 'number') sameName.bodyStart = entry.bodyStart;
         if (typeof sameName.bodyEnd !== 'number') sameName.bodyEnd = entry.bodyEnd;
+        // isExported は単調に true へ寄せる（先に false で登録された後、
+        // より正確な export 判定の登録が来ても潰されないようにする。例: exports.foo = fn）
+        if (entry.isExported && !sameName.isExported) {
+          sameName.isExported = true;
+          if (entry.exportKind && entry.exportKind !== 'none') sameName.exportKind = entry.exportKind;
+          if (entry.exportSource) sameName.exportSource = entry.exportSource;
+        }
         return;
       }
 
@@ -96,7 +106,11 @@ const getFunction = async (filePath, mode = 0) => {
           const fullPath = pathPrefix ? `${pathPrefix}.${key}` : key;
 
           if (t.isObjectProperty(prop)) {
-            if (t.isObjectExpression(prop.value)) {
+            if (t.isIdentifier(prop.value)) {
+              // { foo, bar } / { api: foo } のような識別子参照。
+              // 参照先の関数が別で抽出済み（または後で抽出される）ので、export 対象として記録。
+              if (isExported) referencedExportNames.add(prop.value.name);
+            } else if (t.isObjectExpression(prop.value)) {
               extractFunctionReferences(prop.value, fullPath, isExported);
             } else if (t.isFunctionExpression(prop.value) || t.isArrowFunctionExpression(prop.value)) {
               const funcNode = prop.value;
@@ -144,6 +158,30 @@ const getFunction = async (filePath, mode = 0) => {
           }
         }
       });
+    };
+
+    // クラスメソッド/プロパティが「エクスポートされたクラス」に属するか判定する。
+    // 対応: export class / export default class / module.exports = class / exports.foo = class
+    const isEnclosingClassExported = (path) => {
+      const classPath = path.findParent((p) => p.isClassDeclaration() || p.isClassExpression());
+      if (!classPath || !classPath.parentPath) return false;
+      const parent = classPath.parentPath;
+      if (parent.isExportNamedDeclaration() || parent.isExportDefaultDeclaration()) return true;
+      if (parent.isAssignmentExpression() && parent.node.right === classPath.node) {
+        const assignedName = deriveAssignedName(parent.node.left, null);
+        if (assignedName === 'module.exports'
+          || (assignedName && (assignedName.startsWith('module.exports.') || assignedName.startsWith('exports.')))) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    // メソッドが属するクラス名（名前付きクラスのみ）。CommonJS の
+    // `class Big {}; module.exports = Big;` を後段の processExportFlags で解決するために使う。
+    const getEnclosingClassName = (path) => {
+      const classPath = path.findParent((p) => p.isClassDeclaration() || p.isClassExpression());
+      return classPath?.node?.id?.name || null;
     };
 
     traverse(parsed, {
@@ -537,7 +575,8 @@ const getFunction = async (filePath, mode = 0) => {
 
         addFunctionEntry({
           name,
-          isExported: false,
+          isExported: isEnclosingClassExported(path),
+          className: getEnclosingClassName(path),
           arg: params,
           returnExprs: getReturnExpressionsFromFunctionNode(path.node),
           filePath,
@@ -556,7 +595,8 @@ const getFunction = async (filePath, mode = 0) => {
 
         addFunctionEntry({
           name,
-          isExported: false,
+          isExported: isEnclosingClassExported(path),
+          className: getEnclosingClassName(path),
           arg: params,
           returnExprs: getReturnExpressionsFromFunctionNode(path.node.value),
           filePath,
@@ -567,6 +607,15 @@ const getFunction = async (filePath, mode = 0) => {
         });
       },
     });
+
+    // 識別子参照でエクスポートされた関数（module.exports = { foo, bar } 等）に export フラグを付与
+    if (referencedExportNames.size > 0) {
+      for (const func of resultArray) {
+        if (func && func.name && referencedExportNames.has(func.name)) {
+          func.isExported = true;
+        }
+      }
+    }
 
     return {
       functions: resultArray,
